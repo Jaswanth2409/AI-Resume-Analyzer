@@ -55,3 +55,43 @@ def test_quota_error(monkeypatch):
     ))
     with pytest.raises(service.AIServiceError, match="quota"):
         service.analyze_resume("Python developer")
+
+
+def test_retries_transient_503_then_succeeds(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "unit-test-not-a-real-key")
+    monkeypatch.setattr(service.time, "sleep", lambda seconds: None)
+    calls = []
+
+    class ServerError(Exception):
+        code = 503
+
+    def generate(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 3:
+            raise ServerError()
+        return _response(_valid_resume())
+
+    monkeypatch.setattr(service.genai, "Client", lambda api_key: SimpleNamespace(
+        models=SimpleNamespace(generate_content=generate)
+    ))
+    assert service.analyze_resume("Python developer")["ats_score"] == 84
+    assert len(calls) == 3
+
+
+def test_does_not_retry_missing_model_404(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "unit-test-not-a-real-key")
+    calls = []
+
+    class MissingModel(Exception):
+        code = 404
+
+    def generate(**kwargs):
+        calls.append(kwargs)
+        raise MissingModel()
+
+    monkeypatch.setattr(service.genai, "Client", lambda api_key: SimpleNamespace(
+        models=SimpleNamespace(generate_content=generate)
+    ))
+    with pytest.raises(service.AIServiceError, match="model not available"):
+        service.analyze_resume("Python developer")
+    assert len(calls) == 1
