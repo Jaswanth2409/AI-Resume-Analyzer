@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from app.database.database import engine, Base
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,8 +13,7 @@ from app.auth.auth_bearer import verify_token
 from app.models.job_match import JobMatch
 from app.routers.job_match import router as job_match_router
 from app.routers.report import router as report_router
-
-from app.ai.gemini_service import analyze_resume
+from app.ai.gemini_service import AIServiceError, analyze_resume
 
 Base.metadata.create_all(bind=engine)
 
@@ -36,26 +35,26 @@ app.include_router(analysis.router)
 app.include_router(job_match_router)
 app.include_router(report_router)
 
+
 @app.get("/")
 def home():
-    return {
-        "message": "Welcome to AI Resume Analyzer API"
-    }
+    return {"message": "Welcome to AI Resume Analyzer API"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 
 @app.get("/profile")
 def profile(user=Depends(verify_token)):
-    return {
-        "message": "Welcome",
-        "user": user
-    }
+    return {"message": "Welcome", "user": user}
+
 
 @app.get("/test-ai")
-def test_ai():
-
-    result = analyze_resume(
-        "Python Developer with FastAPI, SQL, HTML, CSS, JavaScript and Machine Learning."
-    )
-
-    return {
-        "analysis": result
-    }
+def test_ai(user=Depends(verify_token)):
+    try:
+        result = analyze_resume("Python Developer with FastAPI, SQL and JavaScript.")
+    except AIServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"analysis": result}
