@@ -6,6 +6,7 @@ Never substitute a score of zero for an API or parsing failure.
 import json
 import logging
 import os
+import time
 
 from google import genai
 from google.genai import types
@@ -42,19 +43,28 @@ def _generate_json(prompt: str) -> dict:
         logger.error("Missing GEMINI_API_KEY in Render environment")
         raise AIServiceError("Gemini API key is not configured on the backend.")
 
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-    except Exception as exc:
-        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-        # Do not log exception bodies, user resume text, or API keys.
-        logger.error("Gemini request failed: type=%s status=%s model=%s",
-                     type(exc).__name__, code, model_name)
-        raise AIServiceError(_error_message(code)) from exc
+    # Retry only transient Gemini server errors. Never retry invalid model
+    # names, invalid keys, or quota errors: those need configuration changes.
+    client = genai.Client(api_key=api_key)
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            break
+        except Exception as exc:
+            code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            status = str(code) if code is not None else ""
+            # Do not log exception bodies, user resume text, or API keys.
+            logger.warning("Gemini request failed: type=%s status=%s model=%s attempt=%s/3",
+                           type(exc).__name__, status, model_name, attempt + 1)
+            if status in ("500", "503", "504") and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise AIServiceError(_error_message(code)) from exc
 
     try:
         result = json.loads(response.text or "")
